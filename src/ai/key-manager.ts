@@ -12,6 +12,36 @@ export class KeyManager {
             this.indices.set(provider, 0);
         }
     }
+
+    getNextKey(provider: ProviderName): string {
+        const entries = this.keys.get(provider);
+        if (!entries || entries.length === 0) {
+            throw new Error(
+                `No API keys registered for provider "${provider}". ` +
+                `Call addKeys("${provider}", [...]) first or set the corresponding env vars.`,
+            );
+        }
+
+        const idx = this.indices.get(provider) ?? 0;
+        const entry = entries[idx % entries.length];
+        this.indices.set(provider, (idx + 1) % entries.length);
+        return entry.key;
+    }
+
+    getKeyCount(provider: ProviderName): number {
+        return this.keys.get(provider)?.length ?? 0;
+    }
+
+    hasKeys(provider: ProviderName): boolean {
+        return this.getKeyCount(provider) > 0;
+    }
+
+    getAvailableProviders(): ProviderName[] {
+        return [...this.keys.entries()]
+            .filter(([, keys]) => keys.length > 0)
+            .map(([name]) => name);
+    }
+
     /**
      *   Env Key naming should be like this     
      *   google     -> GOOGLE_GENERATIVE_AI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY_1, ...
