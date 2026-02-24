@@ -26,3 +26,9 @@ export interface ProviderModelConfig {
     model: string;
     baseURL?: string;
 }
+
+export type ProviderFactory = (
+    modelId: string,
+    apiKey: string,
+    baseURL?: string,
+) => LanguageModel;
