@@ -1,6 +1,5 @@
 import { generateObject, type LanguageModelUsage, type FlexibleSchema, type InferSchema } from "ai";
 import type { ProviderRegistry } from "./provider.js";
-import type { ExtractionResult, ProviderModelConfig, ProviderName } from "./types.js";
 
 function mapUsage(usage: LanguageModelUsage) {
     return {
