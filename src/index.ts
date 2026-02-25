@@ -2,6 +2,9 @@ import 'dotenv/config';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import app from './app.js';
+import { connectDB, disconnectDB } from './database/db.js';
+
+await connectDB();
 
 const server = new Hono();
 
@@ -45,3 +48,12 @@ const port = Number(process.env.PORT) || 3000;
 serve({ fetch: server.fetch, port }, (info) => {
     console.log(`khoborer-khoj-server listening on http://localhost:${info.port}`);
 });
+
+// Graceful shutdown — close MongoDB connection on exit
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, async () => {
+        console.log(`\nReceived ${signal}, shutting down...`);
+        await disconnectDB();
+        process.exit(0);
+    });
+}
