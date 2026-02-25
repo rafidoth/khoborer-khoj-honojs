@@ -1,43 +1,61 @@
 import type { ScrapeResult } from './types.js';
 import { scrapers } from './scrapers/index.js';
 import { saveResults } from './storage.js';
+import { createAIExtractor } from './ai/index.js';
 
-/**
- * Main orchestrator — runs all registered scrapers concurrently and collects results.
- */
 export default async function app(): Promise<ScrapeResult[]> {
-	const results: ScrapeResult[] = [];
+    // const results = await scrape()
+    const results: ScrapeResult[] = [{
+        source: "Prothom Alo",
+        articles: [{
+            title: "Hello",
+            url: "https://example.com/hello",
+            source: "Prothom Alo",
+            publishedAt: new Date().toISOString(),
+            content: "Sample article content",
+            imageUrl: "https://example.com/image.jpg"
+        }],
+        scrapedAt: new Date().toISOString()
+    }]
+    const { extractor } = createAIExtractor()
+    extractor.extract(results)
 
-	const settled = await Promise.allSettled(
-		scrapers.map(async (scraper) => {
-			console.log(`[${scraper.source.name}] scraping ${scraper.source.baseUrl}`);
-			const articles = await scraper.scrape();
-			console.log(`[${scraper.source.name}] found ${articles.length} articles`);
+    const totalArticles = results.reduce((sum, r) => sum + r.articles.length, 0);
+    console.log(
+        `Scrape complete: ${results.length}/${scrapers.length} sources succeeded, ${totalArticles} total articles`,
+    );
 
-			return {
-				source: scraper.source.name,
-				articles,
-				scrapedAt: new Date().toISOString(),
-			} satisfies ScrapeResult;
-		}),
-	);
+    if (results.length > 0) {
+        await saveResults(results);
+    }
 
-	for (const result of settled) {
-		if (result.status === 'fulfilled') {
-			results.push(result.value);
-		} else {
-			console.error('Scraper failed:', result.reason);
-		}
-	}
+    return results;
+}
 
-	const totalArticles = results.reduce((sum, r) => sum + r.articles.length, 0);
-	console.log(
-		`Scrape complete: ${results.length}/${scrapers.length} sources succeeded, ${totalArticles} total articles`,
-	);
 
-	if (results.length > 0) {
-		await saveResults(results);
-	}
 
-	return results;
+async function scrape(): Promise<ScrapeResult[]> {
+    const results: ScrapeResult[] = []
+    const settled = await Promise.allSettled(
+        scrapers.map(async (scraper) => {
+            console.log(`[${scraper.source.name}] scraping ${scraper.source.baseUrl}`);
+            const articles = await scraper.scrape();
+            console.log(`[${scraper.source.name}] found ${articles.length} articles`);
+
+            return {
+                source: scraper.source.name,
+                articles,
+                scrapedAt: new Date().toISOString(),
+            } satisfies ScrapeResult;
+        }),
+    );
+
+    for (const result of settled) {
+        if (result.status === 'fulfilled') {
+            results.push(result.value);
+        } else {
+            console.error('Scraper failed:', result.reason);
+        }
+    }
+    return results
 }
