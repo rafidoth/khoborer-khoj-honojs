@@ -1,9 +1,12 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const DATA_DIR = process.env.DATA_DIR || './data';
-const CACHE_FILE = join(DATA_DIR, 'extracted-urls.json');
 const TTL_MS = 30 * 60 * 60 * 1000; // 30 hours
+
+function getCacheFilePath(): string {
+    const dataDir = process.env.DATA_DIR || './data';
+    return join(dataDir, 'extracted-urls.json');
+}
 
 //In-memory map: URL → timestamp (ms) when extraction occurred
 let cache: Map<string, number> | null = null;
@@ -13,7 +16,7 @@ export async function loadCache(): Promise<Map<string, number>> {
 
     cache = new Map();
     try {
-        const raw = await readFile(CACHE_FILE, 'utf-8');
+        const raw = await readFile(getCacheFilePath(), 'utf-8');
         const entries: Record<string, number> = JSON.parse(raw);
         const now = Date.now();
         for (const [url, ts] of Object.entries(entries)) {
@@ -58,6 +61,14 @@ export async function addURLs(urls: string[]): Promise<void> {
     await persistCache(c);
 }
 
+/**
+ * Reset the in-memory cache so the next loadCache() re-reads from disk.
+ * Primarily useful for testing.
+ */
+export function resetCache(): void {
+    cache = null;
+}
+
 //Remove all expired entries from the cache and persist.
 export async function pruneExpired(): Promise<number> {
     const c = await loadCache();
@@ -77,7 +88,8 @@ export async function pruneExpired(): Promise<number> {
 
 //Write the in-memory cache to disk as JSON.
 async function persistCache(c: Map<string, number>): Promise<void> {
-    await mkdir(DATA_DIR, { recursive: true });
+    const dataDir = process.env.DATA_DIR || './data';
+    await mkdir(dataDir, { recursive: true });
     const obj: Record<string, number> = Object.fromEntries(c);
-    await writeFile(CACHE_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+    await writeFile(getCacheFilePath(), JSON.stringify(obj, null, 2), 'utf-8');
 }
