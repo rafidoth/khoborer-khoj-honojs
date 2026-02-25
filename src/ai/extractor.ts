@@ -6,6 +6,9 @@ import { ArticleExtractionSchema } from "./extractionOutputSchema.js";
 import { insertOne } from "../database/db.js";
 import { loadCache, hasURL, addURL } from "../database/url-cache.js";
 
+function getCollectionName(): string {
+    return process.env.MONGO_COLLECTION || 'articles';
+}
 
 function mapUsage(usage: LanguageModelUsage) {
     return {
@@ -15,12 +18,39 @@ function mapUsage(usage: LanguageModelUsage) {
     };
 }
 
+//Filter out articles whose URLs already exist in the local cache.
+export async function filterNewArticles(scrapeResults: ScrapeResult[]): Promise<RawArticle[]> {
+    await loadCache();
+
+    const allArticles: RawArticle[] = [];
+    for (const result of scrapeResults) {
+        for (const article of result.articles) {
+            allArticles.push(article);
+        }
+    }
+
+    const newArticles: RawArticle[] = [];
+    let skipped = 0;
+
+    for (const article of allArticles) {
+        if (await hasURL(article.url)) {
+            skipped++;
+        } else {
+            newArticles.push(article);
+        }
+    }
+
+    console.log(`[Extractor] ${allArticles.length} total articles, ${skipped} already extracted, ${newArticles.length} new`);
+    return newArticles;
+}
+
 export class Extractor {
     private registry: ProviderRegistry;
 
     constructor(registry: ProviderRegistry) {
         this.registry = registry;
     }
+
     private buildPrompt(article: RawArticle): string {
         return `
     You are a structured data extraction engine for a Bengali news aggregator.
@@ -50,36 +80,10 @@ export class Extractor {
       `.trim();
     }
 
-    private async filterNewArticles(scrapeResults: ScrapeResult[]): Promise<RawArticle[]> {
-        await loadCache();
-
-        const allArticles: RawArticle[] = [];
-        // articles from all sources
-        for (const result of scrapeResults) {
-            for (const article of result.articles) {
-                allArticles.push(article);
-            }
-        }
-
-        const newArticles: RawArticle[] = [];
-        let skipped = 0;
-
-        for (const article of allArticles) {
-            if (await hasURL(article.url)) {
-                skipped++;
-            } else {
-                newArticles.push(article);
-            }
-        }
-
-        console.log(`[Extractor] ${allArticles.length} total articles, ${skipped} already extracted, ${newArticles.length} new`);
-        return newArticles;
-    }
-
     async extract(articles: ScrapeResult[]) {
         console.log("provider order :", this.registry.getProviderOrder());
 
-        const newArticles = await this.filterNewArticles(articles);
+        const newArticles = await filterNewArticles(articles);
 
         if (newArticles.length === 0) {
             console.log("[Extractor] No new articles to extract. Skipping.");
@@ -113,7 +117,7 @@ export class Extractor {
                         extractedAt: new Date().toISOString(),
                     };
 
-                    await insertOne("articles", doc);
+                    await insertOne(getCollectionName(), doc);
                     await addURL(article.url);
                     extracted++;
                     console.log(`[Extractor] Saved: ${output.title_english}`);
