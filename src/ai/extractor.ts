@@ -1,7 +1,11 @@
 import { type LanguageModelUsage } from "ai";
 import type { ProviderRegistry } from "./provider.js";
-import { ScrapeResult } from "../types.js";
+import { RawArticle, ScrapeResult } from "../types.js";
+import { generateText, Output } from "ai";
+import { ArticleExtractionSchema } from "./extractionOutputSchema.js";
+import { insertOne } from "../database/db.js";
 import { loadCache, hasURL, addURL } from "../database/url-cache.js";
+
 
 function mapUsage(usage: LanguageModelUsage) {
     return {
@@ -72,4 +76,54 @@ export class Extractor {
         return newArticles;
     }
 
+    async extract(articles: ScrapeResult[]) {
+        console.log("provider order :", this.registry.getProviderOrder());
+
+        const newArticles = await this.filterNewArticles(articles);
+
+        if (newArticles.length === 0) {
+            console.log("[Extractor] No new articles to extract. Skipping.");
+            return;
+        }
+
+        const { model, provider, model_name } = this.registry.createModel();
+        console.log(`[Extractor] Using model: ${model_name}`);
+
+        let extracted = 0;
+        let failed = 0;
+
+        for (const article of newArticles) {
+            try {
+                console.log(`[Extractor] Extracting: ${article.title}`);
+
+                const { output } = await generateText({
+                    model: model,
+                    output: Output.object({
+                        schema: ArticleExtractionSchema,
+                    }),
+                    prompt: this.buildPrompt(article),
+                });
+
+                if (output) {
+                    const doc = {
+                        ...output,
+                        url: article.url,
+                        source: article.source,
+                        scrapedAt: new Date().toISOString(),
+                        extractedAt: new Date().toISOString(),
+                    };
+
+                    await insertOne("articles", doc);
+                    await addURL(article.url);
+                    extracted++;
+                    console.log(`[Extractor] Saved: ${output.title_english}`);
+                }
+            } catch (err) {
+                failed++;
+                console.error(`[Extractor] Failed to extract "${article.title}":`, err);
+            }
+        }
+
+        console.log(`[Extractor] Done. Extracted: ${extracted}, Failed: ${failed}`);
+    }
 }
