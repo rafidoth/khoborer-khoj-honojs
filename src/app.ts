@@ -4,19 +4,19 @@ import { saveResults } from './storage.js';
 import { createAIExtractor } from './ai/index.js';
 
 export default async function app(): Promise<ScrapeResult[]> {
-    // const results = await scrape()
-    const results: ScrapeResult[] = [{
-        source: "Prothom Alo",
-        articles: [{
-            title: "Hello",
-            url: "https://example.com/hello",
-            source: "Prothom Alo",
-            publishedAt: new Date().toISOString(),
-            content: "Sample article content",
-            imageUrl: "https://example.com/image.jpg"
-        }],
-        scrapedAt: new Date().toISOString()
-    }]
+    const results = await scrape()
+    // const results: ScrapeResult[] = [{
+    //     source: "Prothom Alo",
+    //     articles: [{
+    //         title: "Hello",
+    //         url: "https://example.com/hello",
+    //         source: "Prothom Alo",
+    //         publishedAt: new Date().toISOString(),
+    //         content: "Sample article content",
+    //         imageUrl: "https://example.com/image.jpg"
+    //     }],
+    //     scrapedAt: new Date().toISOString()
+    // }]
     const { extractor } = createAIExtractor()
     extractor.extract(results)
 
