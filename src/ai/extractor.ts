@@ -1,5 +1,5 @@
-import { type LanguageModelUsage } from "ai";
 import type { ProviderRegistry } from "./provider.js";
+import type { ProviderName } from "./types.js";
 import { RawArticle, ScrapeResult } from "../types.js";
 import { generateText, Output } from "ai";
 import { ArticleExtractionSchema } from "./extractionOutputSchema.js";
@@ -10,12 +10,10 @@ function getCollectionName(): string {
     return process.env.MONGO_COLLECTION || 'articles';
 }
 
-function mapUsage(usage: LanguageModelUsage) {
-    return {
-        promptTokens: usage.inputTokens ?? 0,
-        completionTokens: usage.outputTokens ?? 0,
-        totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-    };
+const RETRY_DELAY_MS = 1500;
+
+function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 //Filter out articles whose URLs already exist in the local cache.
@@ -81,7 +79,8 @@ export class Extractor {
     }
 
     async extract(articles: ScrapeResult[]) {
-        console.log("provider order :", this.registry.getProviderOrder());
+        const providerOrder = this.registry.getProviderOrder();
+        console.log("provider order :", providerOrder);
 
         const newArticles = await filterNewArticles(articles);
 
@@ -90,44 +89,67 @@ export class Extractor {
             return;
         }
 
-        const { model, provider, model_name } = this.registry.createModel();
-        console.log(`[Extractor] Using model: ${model_name}`);
-
+        const skippedProviders = new Set<ProviderName>();
         let extracted = 0;
         let failed = 0;
 
         for (const article of newArticles) {
-            try {
-                console.log(`[Extractor] Extracting: ${article.title}`);
+            console.log(`[Extractor] Extracting: ${article.title}`);
+            let articleDone = false;
 
-                const { output } = await generateText({
-                    model: model,
-                    output: Output.object({
-                        schema: ArticleExtractionSchema,
-                    }),
-                    prompt: this.buildPrompt(article),
-                });
+            for (const provider of providerOrder) {
+                if (skippedProviders.has(provider)) continue;
 
-                if (output) {
-                    const doc = {
-                        ...output,
-                        url: article.url,
-                        source: article.source,
-                        scrapedAt: new Date().toISOString(),
-                        extractedAt: new Date().toISOString(),
-                    };
+                try {
+                    const { model, model_name } = this.registry.createModel({ provider });
+                    console.log(`[Extractor] Trying provider: ${provider} (model: ${model_name})`);
 
-                    await insertOne(getCollectionName(), doc);
-                    await addURL(article.url);
-                    extracted++;
-                    console.log(`[Extractor] Saved: ${output.title_english}`);
+                    const { output } = await generateText({
+                        model: model,
+                        output: Output.object({
+                            schema: ArticleExtractionSchema,
+                        }),
+                        prompt: this.buildPrompt(article),
+                    });
+
+                    if (output) {
+                        const doc = {
+                            ...output,
+                            url: article.url,
+                            source: article.source,
+                            scrapedAt: new Date().toISOString(),
+                            extractedAt: new Date().toISOString(),
+                        };
+
+                        await insertOne(getCollectionName(), doc);
+                        await addURL(article.url);
+                        extracted++;
+                        console.log(`[Extractor] Saved: ${output.title_english}`);
+                        articleDone = true;
+                        break;
+                    }
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    console.error(`[Extractor] Provider ${provider} failed for "${article.title}": ${message}`);
+                    skippedProviders.add(provider);
+                    console.log(`[Extractor] Skipping provider ${provider} for remaining articles`);
+
+                    // Delay before trying the next provider, if any remain
+                    const remainingProviders = providerOrder.filter(p => !skippedProviders.has(p));
+                    if (remainingProviders.length > 0) {
+                        console.log(`[Extractor] Waiting ${RETRY_DELAY_MS}ms before trying next provider...`);
+                        await delay(RETRY_DELAY_MS);
+                    }
                 }
-            } catch (err) {
+            }
+
+            if (!articleDone) {
                 failed++;
-                console.error(`[Extractor] Failed to extract "${article.title}":`, err);
+                console.error(`[Extractor] All providers failed for "${article.title}"`);
             }
         }
 
-        console.log(`[Extractor] Done. Extracted: ${extracted}, Failed: ${failed}`);
+        const skippedList = skippedProviders.size > 0 ? `, Skipped providers: [${[...skippedProviders].join(', ')}]` : '';
+        console.log(`[Extractor] Done. Extracted: ${extracted}, Failed: ${failed}${skippedList}`);
     }
 }
