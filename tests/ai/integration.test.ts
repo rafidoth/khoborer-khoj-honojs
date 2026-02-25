@@ -109,6 +109,128 @@ function makeMockRegistry() {
     };
 }
 
+// --- Helper: multi-provider registry for fallback tests ---
+function makeMultiProviderRegistry(providers: string[] = ['groq', 'cerebras', 'google']) {
+    let callIndex = 0;
+    return {
+        getProviderOrder: () => [...providers],
+        createModel: (config?: { provider?: string }) => {
+            const provider = config?.provider ?? providers[0];
+            callIndex++;
+            return {
+                model: {} as any,
+                provider: provider as any,
+                model_name: `${provider}-model`,
+            };
+        },
+    };
+}
+
+function makeMultiArticleScrapeResults(count: number): ScrapeResult[] {
+    const articles = Array.from({ length: count }, (_, i) => ({
+        title: `Article ${i + 1}`,
+        url: `https://prothomalo.com/article-${i + 1}`,
+        source: 'Prothom Alo',
+        content: `Content for article ${i + 1}`,
+    }));
+    return [{
+        source: 'Prothom Alo',
+        scrapedAt: new Date().toISOString(),
+        articles,
+    }];
+}
+
+describe('Provider fallback behavior', () => {
+    it('should fall back to the second provider when the first fails', async () => {
+        // First call to generateText throws (simulating groq failure),
+        // second call succeeds (cerebras fallback)
+        mockGenerateText
+            .mockRejectedValueOnce(new Error('Rate limit exceeded') as never)
+            .mockResolvedValueOnce({ output: DUMMY_EXTRACTION } as never);
+
+        const registry = makeMultiProviderRegistry(['groq', 'cerebras']);
+        const extractor = new Extractor(registry as any);
+        await extractor.extract(makeFakeScrapeResults());
+
+        // generateText should have been called twice: once for groq (fail), once for cerebras (success)
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+
+        // Article should still be saved in MongoDB
+        const col = getCollection(TEST_COLLECTION);
+        const docs = await col.find({}).toArray();
+        expect(docs).toHaveLength(1);
+        expect(docs[0].title_english).toBe('Test: Dhaka Sees Heavy Rainfall');
+
+        // URL should be cached
+        const cached = await hasURL('https://prothomalo.com/test-article-123');
+        expect(cached).toBe(true);
+    });
+
+    it('should skip a failed provider for all subsequent articles', async () => {
+        // 3 articles, 2 providers [groq, cerebras]
+        // groq fails on article 1, cerebras succeeds for all 3
+        mockGenerateText
+            .mockRejectedValueOnce(new Error('groq down') as never)     // article 1, groq → fail
+            .mockResolvedValueOnce({ output: DUMMY_EXTRACTION } as never) // article 1, cerebras → ok
+            .mockResolvedValueOnce({ output: DUMMY_EXTRACTION } as never) // article 2, cerebras → ok (groq skipped)
+            .mockResolvedValueOnce({ output: DUMMY_EXTRACTION } as never); // article 3, cerebras → ok (groq skipped)
+
+        const registry = makeMultiProviderRegistry(['groq', 'cerebras']);
+        const extractor = new Extractor(registry as any);
+        await extractor.extract(makeMultiArticleScrapeResults(3));
+
+        // 4 calls total: 1 failed groq + 3 successful cerebras
+        expect(mockGenerateText).toHaveBeenCalledTimes(4);
+
+        // All 3 articles should be in MongoDB
+        const col = getCollection(TEST_COLLECTION);
+        const docs = await col.find({}).toArray();
+        expect(docs).toHaveLength(3);
+    });
+
+    it('should count an article as failed when all providers fail', async () => {
+        mockGenerateText
+            .mockRejectedValueOnce(new Error('groq down') as never)
+            .mockRejectedValueOnce(new Error('cerebras down') as never);
+
+        const registry = makeMultiProviderRegistry(['groq', 'cerebras']);
+        const extractor = new Extractor(registry as any);
+        await extractor.extract(makeFakeScrapeResults());
+
+        // Both providers tried and failed
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+
+        // No documents should be in MongoDB
+        const col = getCollection(TEST_COLLECTION);
+        const docs = await col.find({}).toArray();
+        expect(docs).toHaveLength(0);
+
+        // URL should NOT be cached (extraction failed)
+        const cached = await hasURL('https://prothomalo.com/test-article-123');
+        expect(cached).toBe(false);
+    });
+
+    it('should try next provider when output is null and succeed', async () => {
+        // First provider returns null output (no error), second succeeds
+        mockGenerateText
+            .mockResolvedValueOnce({ output: null } as never)
+            .mockResolvedValueOnce({ output: DUMMY_EXTRACTION } as never);
+
+        const registry = makeMultiProviderRegistry(['groq', 'cerebras']);
+        const extractor = new Extractor(registry as any);
+        await extractor.extract(makeFakeScrapeResults());
+
+        // groq returned null output — no error thrown, so it falls through to cerebras
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+
+        // cerebras succeeded, so the article should be saved
+        const col = getCollection(TEST_COLLECTION);
+        const docs = await col.find({}).toArray();
+        expect(docs).toHaveLength(1);
+        expect(docs[0].title_english).toBe('Test: Dhaka Sees Heavy Rainfall');
+    });
+});
+
 describe('Integration: scrape → extract (mocked AI) → MongoDB + cache', () => {
     it('should extract an article and store it in MongoDB', async () => {
         const extractor = new Extractor(makeMockRegistry() as any);
