@@ -23,7 +23,7 @@ export interface ProviderKeyConfig {
 // model config for a provider 
 export interface ProviderModelConfig {
     provider: ProviderName;
-    model: string;
+    model?: string;
     baseURL?: string;
 }
 
