@@ -145,7 +145,9 @@ export class ProthomAloScraper implements Scraper {
                 try {
                     console.log(`[${this.source.name}] reading article ${link}`);
                     const article = await collectIndividualArticle(page, link, this.source.name);
-                    articles.push(article);
+                    if (article.content) {
+                        articles.push(article);
+                    }
                 } catch (err) {
                     console.error(`[${this.source.name}] failed to read ${link}:`, err);
                 } finally {
