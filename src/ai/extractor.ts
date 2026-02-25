@@ -1,5 +1,6 @@
-import { generateObject, type LanguageModelUsage, type FlexibleSchema, type InferSchema } from "ai";
+import { type LanguageModelUsage } from "ai";
 import type { ProviderRegistry } from "./provider.js";
+import { ScrapeResult } from "../types.js";
 
 function mapUsage(usage: LanguageModelUsage) {
     return {
@@ -14,5 +15,12 @@ export class Extractor {
 
     constructor(registry: ProviderRegistry) {
         this.registry = registry;
+    }
+
+    extract(articles: ScrapeResult[]) {
+        console.log("provider order :", this.registry.getProviderOrder())
+        const { model, provider, model_name } = this.registry.createModel()
+        console.log(model_name)
+        console.log("scraped ", articles[0].articles[0].title)
     }
 }
