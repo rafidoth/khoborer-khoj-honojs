@@ -226,7 +226,7 @@ const BusinessTagsSchema = z.object({
 
 export const ArticleExtractionSchema = z.object({
     title_english: z.string().describe(
-        "Translated English title. Max 15 words."
+        "Translated English title. Not necessarily has to be translated from the original title, Should be based on the actual content. Max 15 words."
     ),
     title_original: z.string().nullable().describe(
         "The Bengali title exactly as provided."
