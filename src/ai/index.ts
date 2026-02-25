@@ -34,5 +34,5 @@ export function createAIExtractor(options: CreateAIExtractorOptions = {}) {
     const registry = new ProviderRegistry(keyManager, providerOrder);
     const extractor = new Extractor(registry);
 
-    return { extractor, keyManager, registry };
+    return { extractor };
 }
