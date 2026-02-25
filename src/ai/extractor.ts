@@ -1,6 +1,7 @@
 import { type LanguageModelUsage } from "ai";
 import type { ProviderRegistry } from "./provider.js";
 import { ScrapeResult } from "../types.js";
+import { loadCache, hasURL, addURL } from "../database/url-cache.js";
 
 function mapUsage(usage: LanguageModelUsage) {
     return {
@@ -45,19 +46,30 @@ export class Extractor {
       `.trim();
     }
 
-        console.log("provider order :", this.registry.getProviderOrder())
-        const { model, provider, model_name } = this.registry.createModel()
-        console.log(model_name)
-        console.log("scraped ", articles[0].articles[0].title)
-        const { output } = await generateText({
-            model: model,
-            output: Output.object({
-                schema: ArticleExtractionSchema
-            }),
-            prompt: this.buildPrompt(articles[0].articles[0])
-        });
+    private async filterNewArticles(scrapeResults: ScrapeResult[]): Promise<RawArticle[]> {
+        await loadCache();
 
-        console.log(output)
+        const allArticles: RawArticle[] = [];
+        // articles from all sources
+        for (const result of scrapeResults) {
+            for (const article of result.articles) {
+                allArticles.push(article);
+            }
+        }
 
+        const newArticles: RawArticle[] = [];
+        let skipped = 0;
+
+        for (const article of allArticles) {
+            if (await hasURL(article.url)) {
+                skipped++;
+            } else {
+                newArticles.push(article);
+            }
+        }
+
+        console.log(`[Extractor] ${allArticles.length} total articles, ${skipped} already extracted, ${newArticles.length} new`);
+        return newArticles;
     }
+
 }
