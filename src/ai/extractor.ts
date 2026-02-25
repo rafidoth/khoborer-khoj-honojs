@@ -49,5 +49,15 @@ export class Extractor {
         const { model, provider, model_name } = this.registry.createModel()
         console.log(model_name)
         console.log("scraped ", articles[0].articles[0].title)
+        const { output } = await generateText({
+            model: model,
+            output: Output.object({
+                schema: ArticleExtractionSchema
+            }),
+            prompt: this.buildPrompt(articles[0].articles[0])
+        });
+
+        console.log(output)
+
     }
 }
