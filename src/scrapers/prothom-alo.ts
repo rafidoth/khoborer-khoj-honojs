@@ -1,5 +1,6 @@
 import puppeteer, { type Browser, type Page } from 'puppeteer';
 import type { RawArticle, SourceName, Scraper } from '../types.js';
+import { getRecentlyExtractedURLs, getCollectionName } from '../database/db.js';
 
 const SUB_TOPICS = ['bangladesh', 'politics', 'business'];
 
@@ -138,9 +139,22 @@ export class ProthomAloScraper implements Scraper {
             }
 
             const allLinks = Array.from(scrapedLinks);
+
+            // Filter out URLs already extracted in the last 34 hours
+            let newLinks: string[];
+            try {
+                const recentURLs = await getRecentlyExtractedURLs(getCollectionName(), 34);
+                newLinks = allLinks.filter(link => !recentURLs.has(link));
+                console.log(`[${this.source.name}] ${allLinks.length} links found, ${allLinks.length - newLinks.length} already extracted, ${newLinks.length} new`);
+            } catch {
+                // If DB query fails (e.g. not connected), scrape everything
+                console.warn(`[${this.source.name}] Could not check recently extracted URLs, scraping all`);
+                newLinks = allLinks;
+            }
+
             const articles: RawArticle[] = [];
 
-            for (const link of allLinks) {
+            for (const link of newLinks) {
                 const page = await browser.newPage();
                 try {
                     console.log(`[${this.source.name}] reading article ${link}`);
@@ -155,7 +169,7 @@ export class ProthomAloScraper implements Scraper {
                 }
             }
 
-            console.log(`[${this.source.name}] collected ${articles.length} articles from ${allLinks.length} links`);
+            console.log(`[${this.source.name}] collected ${articles.length} articles from ${newLinks.length} new links (${allLinks.length} total)`);
             return articles;
         } finally {
             await closeBrowser(browser);

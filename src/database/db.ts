@@ -10,6 +10,10 @@ if (!MONGODB_URI) {
 let client: MongoClient | null = null;
 let db: Db | null = null;
 
+export function getCollectionName(): string {
+    return process.env.MONGO_COLLECTION || 'articles';
+}
+
 export async function connectDB(): Promise<Db> {
     if (db) return db;
 
@@ -34,6 +38,21 @@ export function getCollection<T extends Document>(name: string): Collection<T> {
         throw new Error('Database not connected. Call connectDB() first.');
     }
     return db.collection<T>(name);
+}
+
+export async function getRecentlyExtractedURLs(
+    collectionName: string,
+    hoursAgo: number = 34,
+): Promise<Set<string>> {
+    const col = getCollection(collectionName);
+    const cutoff = new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+    const docs = await col
+        .find(
+            { extractedAt: { $gte: cutoff } },
+            { projection: { url: 1, _id: 0 } },
+        )
+        .toArray();
+    return new Set(docs.map(d => d.url as string));
 }
 
 export async function insertOne<T extends Document>(

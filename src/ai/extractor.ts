@@ -3,12 +3,7 @@ import type { ProviderName } from "./types.js";
 import { RawArticle, ScrapeResult } from "../types.js";
 import { generateText, Output } from "ai";
 import { ArticleExtractionSchema } from "./extractionOutputSchema.js";
-import { insertOne } from "../database/db.js";
-import { loadCache, hasURL, addURL } from "../database/url-cache.js";
-
-function getCollectionName(): string {
-    return process.env.MONGO_COLLECTION || 'articles';
-}
+import { insertOne, getCollectionName } from "../database/db.js";
 
 const RETRY_DELAY_MS = 1500;
 
@@ -16,61 +11,32 @@ function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-//Filter out articles whose URLs already exist in the local cache.
-export async function filterNewArticles(scrapeResults: ScrapeResult[]): Promise<RawArticle[]> {
-    await loadCache();
-
-    const allArticles: RawArticle[] = [];
-    for (const result of scrapeResults) {
-        for (const article of result.articles) {
-            allArticles.push(article);
-        }
-    }
-
-    const newArticles: RawArticle[] = [];
-    let skipped = 0;
-
-    for (const article of allArticles) {
-        if (await hasURL(article.url)) {
-            skipped++;
-        } else {
-            newArticles.push(article);
-        }
-    }
-
-    console.log(`[Extractor] ${allArticles.length} total articles, ${skipped} already extracted, ${newArticles.length} new`);
-    return newArticles;
-}
-
 export class Extractor {
     private registry: ProviderRegistry;
+    private articleDelayMs: number;
 
-    constructor(registry: ProviderRegistry) {
+    constructor(registry: ProviderRegistry, articleDelayMs: number = 3000) {
         this.registry = registry;
+        this.articleDelayMs = articleDelayMs;
     }
-
     private buildPrompt(article: RawArticle): string {
         return `
-    You are a structured data extraction engine for a Bengali news aggregator.
+    You are a data extraction engine for a Bengali news pipeline.
 
     RULES:
-    - Never invent or infer information not explicitly present in the article.
-    - All text output must be in English. Translate or transliterate from Bengali.
-    - For casualties, monetary figures, and statements: only extract what is 
-      explicitly written. Do not estimate or assume.
-    - For government_action: return null if the article is not primarily about 
-      a government decision, policy, or regulatory action.
-    - For statements: skip any statement where the speaker is not named.
-    - sentiment reflects the factual tone of the content, not moral judgment. 
-      A corruption arrest is neutral. A flood with deaths is negative.
-    - tags must match the category you select. Do not mix tag structures.
-    - For publish_date: convert Bengali numerals if needed (১=1, ২=2, ৩=3, 
-      ৪=4, ৫=5, ৬=6, ৭=7, ৮=8, ৯=9, ০=0). Return YYYY-MM-DD format.
-
-    ---
+    - All text output must be in English. Translate and transliterate from Bengali.
+    - Extract only what is explicitly written. Never infer or invent.
+    - For arrays: return empty array [] when not applicable. Never return null for arrays.
+    - Bengali numeral conversion: ০=0 ১=1 ২=2 ৩=3 ৪=4 ৫=5 ৬=6 ৭=7 ৮=8 ৯=9
+    - incident_type: populate only if category is "bangladesh", else []
+    - event_type: populate only if category is "politics", "business", or "international", else []
+    - political_parties: populate only if category is "politics", else []
+    - sector: populate only if category is "business", else []
+    - sentiment: judge the factual tone, not the moral weight of the event.
+      A corruption arrest = "neutral". A flood with deaths = "negative".
+    - is_update: true only if the article explicitly references a prior incident or case.
 
     ARTICLE:
-
     TITLE: ${article.title}
     PUBLISH DATE: ${article.publishedAt ?? "Not provided"}
     CONTENT:
@@ -82,12 +48,20 @@ export class Extractor {
         const providerOrder = this.registry.getProviderOrder();
         console.log("provider order :", providerOrder);
 
-        const newArticles = await filterNewArticles(articles);
+        const allArticles: RawArticle[] = [];
+        for (const result of articles) {
+            for (const article of result.articles) {
+                allArticles.push(article);
+            }
+        }
 
-        if (newArticles.length === 0) {
-            console.log("[Extractor] No new articles to extract. Skipping.");
+        if (allArticles.length === 0) {
+            console.log("[Extractor] No articles to extract. Skipping.");
             return;
         }
+
+        console.log(`[Extractor] ${allArticles.length} articles to extract`);
+        const newArticles = allArticles;
 
         const skippedProviders = new Set<ProviderName>();
         let extracted = 0;
@@ -100,41 +74,56 @@ export class Extractor {
             for (const provider of providerOrder) {
                 if (skippedProviders.has(provider)) continue;
 
-                try {
-                    const { model, model_name } = this.registry.createModel({ provider });
-                    console.log(`[Extractor] Trying provider: ${provider} (model: ${model_name})`);
+                const keyCount = this.registry.getKeyCount(provider);
+                let providerExhausted = false;
 
-                    const { output } = await generateText({
-                        model: model,
-                        output: Output.object({
-                            schema: ArticleExtractionSchema,
-                        }),
-                        prompt: this.buildPrompt(article),
-                    });
+                for (let keyAttempt = 0; keyAttempt < keyCount; keyAttempt++) {
+                    try {
+                        const { model, model_name } = this.registry.createModel({ provider });
+                        console.log(`[Extractor] Trying provider: ${provider} (model: ${model_name}, key ${keyAttempt + 1}/${keyCount})`);
 
-                    if (output) {
-                        const doc = {
-                            ...output,
-                            url: article.url,
-                            source: article.source,
-                            scrapedAt: new Date().toISOString(),
-                            extractedAt: new Date().toISOString(),
-                        };
+                        const { output } = await generateText({
+                            model: model,
+                            output: Output.object({
+                                schema: ArticleExtractionSchema,
+                            }),
+                            prompt: this.buildPrompt(article),
+                        });
 
-                        await insertOne(getCollectionName(), doc);
-                        await addURL(article.url);
-                        extracted++;
-                        console.log(`[Extractor] Saved: ${output.title_english}`);
-                        articleDone = true;
-                        break;
+                        if (output) {
+                            const doc = {
+                                ...output,
+                                url: article.url,
+                                source: article.source,
+                                scrapedAt: new Date().toISOString(),
+                                extractedAt: new Date().toISOString(),
+                            };
+
+                            await insertOne(getCollectionName(), doc);
+                            extracted++;
+                            console.log(`[Extractor] Saved: ${output.title_english}`);
+                            articleDone = true;
+                            break;
+                        }
+                    } catch (err) {
+                        const message = err instanceof Error ? err.message : String(err);
+                        console.error(`[Extractor] Provider ${provider} (key ${keyAttempt + 1}/${keyCount}) failed for "${article.title}": ${message}`);
+
+                        if (keyAttempt < keyCount - 1) {
+                            console.log(`[Extractor] Retrying ${provider} with next API key...`);
+                            await delay(RETRY_DELAY_MS);
+                        } else {
+                            providerExhausted = true;
+                        }
                     }
-                } catch (err) {
-                    const message = err instanceof Error ? err.message : String(err);
-                    console.error(`[Extractor] Provider ${provider} failed for "${article.title}": ${message}`);
-                    skippedProviders.add(provider);
-                    console.log(`[Extractor] Skipping provider ${provider} for remaining articles`);
+                }
 
-                    // Delay before trying the next provider, if any remain
+                if (articleDone) break;
+
+                if (providerExhausted) {
+                    skippedProviders.add(provider);
+                    console.log(`[Extractor] All keys exhausted for ${provider}, skipping for remaining articles`);
+
                     const remainingProviders = providerOrder.filter(p => !skippedProviders.has(p));
                     if (remainingProviders.length > 0) {
                         console.log(`[Extractor] Waiting ${RETRY_DELAY_MS}ms before trying next provider...`);
@@ -146,6 +135,11 @@ export class Extractor {
             if (!articleDone) {
                 failed++;
                 console.error(`[Extractor] All providers failed for "${article.title}"`);
+            }
+
+            // Pause between articles to avoid rate limiting
+            if (this.articleDelayMs > 0) {
+                await delay(this.articleDelayMs);
             }
         }
 

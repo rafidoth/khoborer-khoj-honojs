@@ -1,125 +1,79 @@
-import { jest } from '@jest/globals';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { ScrapeResult } from '../../src/types';
+import { connectDB, disconnectDB, getCollection, insertOne, getRecentlyExtractedURLs } from '../../src/database/db';
 
-let testDir: string;
+const TEST_COLLECTION = '__test_extractor_dedup';
 
 beforeAll(async () => {
-    // making a mock local cache`
-    testDir = await mkdtemp(join(tmpdir(), 'filter-test-'));
-    process.env.DATA_DIR = testDir;
-});
+    await connectDB();
+}, 15000);
 
 afterAll(async () => {
-    await rm(testDir, { recursive: true, force: true });
-    delete process.env.DATA_DIR;
+    const col = getCollection(TEST_COLLECTION);
+    await col.drop().catch(() => {});
+    await disconnectDB();
 });
 
-// Fresh module import per test to reset in-memory cache
-async function getModules() {
-    jest.resetModules();
-    const { filterNewArticles } = await import('../../src/ai/extractor');
-    const { addURL, addURLs } = await import('../../src/database/url-cache');
-    return { filterNewArticles, addURL, addURLs };
-}
+afterEach(async () => {
+    const col = getCollection(TEST_COLLECTION);
+    await col.deleteMany({});
+});
 
-function makeScrapeResults(urls: string[]): ScrapeResult[] {
-    return [{
-        source: 'Prothom Alo',
-        scrapedAt: new Date().toISOString(),
-        articles: urls.map(url => ({
-            title: `Article ${url}`,
-            url,
-            source: 'Prothom Alo' as const,
-            content: 'Some content',
-        })),
-    }];
-}
-
-describe('filterNewArticles', () => {
-    beforeEach(async () => {
-        const cacheFile = join(testDir, 'extracted-urls.json');
-        await rm(cacheFile, { force: true });
+describe('getRecentlyExtractedURLs', () => {
+    it('should return empty set when collection is empty', async () => {
+        const urls = await getRecentlyExtractedURLs(TEST_COLLECTION, 34);
+        expect(urls).toBeInstanceOf(Set);
+        expect(urls.size).toBe(0);
     });
 
-    it('should return all articles when cache is empty', async () => {
-        const { filterNewArticles } = await getModules();
+    it('should return URLs extracted within the time window', async () => {
+        const now = new Date();
+        await insertOne(TEST_COLLECTION, {
+            url: 'https://example.com/recent-1',
+            extractedAt: now.toISOString(),
+        });
+        await insertOne(TEST_COLLECTION, {
+            url: 'https://example.com/recent-2',
+            extractedAt: new Date(now.getTime() - 10 * 60 * 60 * 1000).toISOString(), // 10 hours ago
+        });
 
-        const results = makeScrapeResults([
-            'https://example.com/1',
-            'https://example.com/2',
-            'https://example.com/3',
-        ]);
-
-        const newArticles = await filterNewArticles(results);
-        expect(newArticles).toHaveLength(3);
+        const urls = await getRecentlyExtractedURLs(TEST_COLLECTION, 34);
+        expect(urls.size).toBe(2);
+        expect(urls.has('https://example.com/recent-1')).toBe(true);
+        expect(urls.has('https://example.com/recent-2')).toBe(true);
     });
 
-    it('should filter out articles that are already in cache', async () => {
-        const { filterNewArticles, addURLs } = await getModules();
+    it('should exclude URLs extracted outside the time window', async () => {
+        const now = new Date();
+        // Recent — within 34h
+        await insertOne(TEST_COLLECTION, {
+            url: 'https://example.com/fresh',
+            extractedAt: new Date(now.getTime() - 5 * 60 * 60 * 1000).toISOString(), // 5 hours ago
+        });
+        // Old — outside 34h
+        await insertOne(TEST_COLLECTION, {
+            url: 'https://example.com/stale',
+            extractedAt: new Date(now.getTime() - 40 * 60 * 60 * 1000).toISOString(), // 40 hours ago
+        });
 
-        // Pre-cache 2 of 4 URLs
-        await addURLs([
-            'https://example.com/cached-1',
-            'https://example.com/cached-2',
-        ]);
-
-        const results = makeScrapeResults([
-            'https://example.com/cached-1',
-            'https://example.com/cached-2',
-            'https://example.com/new-1',
-            'https://example.com/new-2',
-        ]);
-
-        const newArticles = await filterNewArticles(results);
-        expect(newArticles).toHaveLength(2);
-        expect(newArticles.map(a => a.url)).toEqual([
-            'https://example.com/new-1',
-            'https://example.com/new-2',
-        ]);
+        const urls = await getRecentlyExtractedURLs(TEST_COLLECTION, 34);
+        expect(urls.size).toBe(1);
+        expect(urls.has('https://example.com/fresh')).toBe(true);
+        expect(urls.has('https://example.com/stale')).toBe(false);
     });
 
-    it('should return empty array when all articles are cached', async () => {
-        const { filterNewArticles, addURLs } = await getModules();
+    it('should respect a custom hoursAgo parameter', async () => {
+        const now = new Date();
+        await insertOne(TEST_COLLECTION, {
+            url: 'https://example.com/edge',
+            extractedAt: new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString(), // 3 hours ago
+        });
 
-        await addURLs([
-            'https://example.com/a',
-            'https://example.com/b',
-        ]);
+        // With a 2-hour window, the 3-hour-old doc should be excluded
+        const narrow = await getRecentlyExtractedURLs(TEST_COLLECTION, 2);
+        expect(narrow.size).toBe(0);
 
-        const results = makeScrapeResults([
-            'https://example.com/a',
-            'https://example.com/b',
-        ]);
-
-        const newArticles = await filterNewArticles(results);
-        expect(newArticles).toHaveLength(0);
-    });
-
-    it('should flatten articles from multiple ScrapeResults', async () => {
-        const { filterNewArticles } = await getModules();
-
-        const results: ScrapeResult[] = [
-            {
-                source: 'Prothom Alo',
-                scrapedAt: new Date().toISOString(),
-                articles: [
-                    { title: 'PA1', url: 'https://pa.com/1', source: 'Prothom Alo', content: 'c' },
-                    { title: 'PA2', url: 'https://pa.com/2', source: 'Prothom Alo', content: 'c' },
-                ],
-            },
-            {
-                source: 'Somoy News',
-                scrapedAt: new Date().toISOString(),
-                articles: [
-                    { title: 'SN1', url: 'https://sn.com/1', source: 'Somoy News', content: 'c' },
-                ],
-            },
-        ];
-
-        const newArticles = await filterNewArticles(results);
-        expect(newArticles).toHaveLength(3);
+        // With a 4-hour window, it should be included
+        const wide = await getRecentlyExtractedURLs(TEST_COLLECTION, 4);
+        expect(wide.size).toBe(1);
+        expect(wide.has('https://example.com/edge')).toBe(true);
     });
 });

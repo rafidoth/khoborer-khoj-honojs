@@ -50,6 +50,10 @@ export class ProviderRegistry {
         return [...this.providerOrder];
     }
 
+    getKeyCount(provider: ProviderName): number {
+        return this.keyManager.getKeyCount(provider);
+    }
+
     createModel(config?: ProviderModelConfig): {
         model: LanguageModel;
         provider: ProviderName;

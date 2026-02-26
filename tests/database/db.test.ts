@@ -4,7 +4,7 @@ const TEST_COLLECTION = '__test_db_crud';
 
 beforeAll(async () => {
     await connectDB();
-});
+}, 15000);
 
 afterAll(async () => {
     // Clean up: drop the test collection entirely

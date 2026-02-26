@@ -21,10 +21,12 @@ export interface CreateAIExtractorOptions {
     loadFromEnv?: boolean;
     // providers run on this order 
     providerOrder?: ProviderName[];
+    // Delay in ms between extracting each article (default: 3000)
+    articleDelayMs?: number;
 }
 
 export function createAIExtractor(options: CreateAIExtractorOptions = {}) {
-    const { loadFromEnv = true, providerOrder } = options;
+    const { loadFromEnv = true, providerOrder, articleDelayMs } = options;
 
     const keyManager = new KeyManager();
     if (loadFromEnv) {
@@ -32,7 +34,7 @@ export function createAIExtractor(options: CreateAIExtractorOptions = {}) {
     }
 
     const registry = new ProviderRegistry(keyManager, providerOrder);
-    const extractor = new Extractor(registry);
+    const extractor = new Extractor(registry, articleDelayMs);
 
     return { extractor };
 }
